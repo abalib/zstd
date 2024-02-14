@@ -24,19 +24,19 @@
 #endif
 
 /*
- * An external xxhash provider accelerates the ZSTD streaming API function
+ * An external xxhash producer accelerates the ZSTD streaming API function
  * XXH64_update (XXH64_state_t* statePtr, const void* input, size_t length)
  * (in zstd/lib/common/xxhash.h).
  *
- * Hashing may be performed by the External Sequence Provider
- * since the input stream is already available to the provider.
+ * Hashing may be performed by the External Sequence Producer
+ * since the input stream is already available to the producer.
  *
  * The hw_xxh64_state_t layout is identical to XXH64_state_t.  Caller
  * provides the initial state, input and length to the external
- * provider. The provider computes the hash of input and returns the
+ * producer. The producer computes the hash of input and returns the
  * updated state in the same state struct.
  *
- * Main value of an external xxhash provider is eliminating processor
+ * Main value of an external xxhash producer is eliminating processor
  * cycles consumed by the hashing functions.
  *
  * Related XXH64 functions XXH64_reset, XXH64_createState,
@@ -58,7 +58,7 @@ typedef struct {
 
 
 /*
- * An external histogram provider accelerates collection of ZSTD
+ * An external histogram producer accelerates collection of ZSTD
  * sequence statistics. Frequency of literals, literals_length_codes,
  * match_length_codes, and offset_codes are returned in struct
  * histogram_t.  The histogram_t is expected to be used by ZSTD while
@@ -70,7 +70,7 @@ typedef struct {
  * symbols.
  *
  * Sequence statistics may be collected by the External Sequence
- * Provider since it outputs the sequences.
+ * Producer since it outputs the sequences.
  *
  *  Endianness of histogram_t are same as that of the host.
  */
@@ -93,21 +93,19 @@ typedef struct {
 /*
  * The histogram output for sequences and the input/output XXH64 state
  * of the input stream is exchanged with the accelerator via
- * sequence_provider_parameters_t.
+ * sequence_producer_parameters_t.
  *
  * The caller supplies the initial XXH64_state_t in addition to the
- * input stream and length.  The external sequence provider returns
+ * input stream and length.  The external sequence producer returns
  * the ZSTD sequences and optionally returns the updated
  * XXH_64_state_t and the sequence statistics in histogram_t.
  */
 
-#define XXHASH_REQUEST      0x00000001
-#define XXHASH_AVAILABLE    0x00000002
-#define HISTOGRAM_REQUEST   0x00000004
-#define HISTOGRAM_AVAILABLE 0x00000008
+#define XXHASH_READY     0x00000001
+#define HISTOGRAM_READY  0x00000002
 
 typedef struct {
-    uint32_t request_response;
+    uint32_t status;
     union {
 #ifdef XXHASH_H_INCLUDED
 	XXH64_state_t      zstd_xxh64_state;
@@ -116,6 +114,47 @@ typedef struct {
     };
 
     histogram_t histogram;
-} sequence_provider_parameters_t;
+} sequence_producer_parameters_t;
+
+
+#define ZSTD_STATIC_LINKING_ONLY
+#include "zstd.h"
+
+/*
+ * Function pointer for the external sequence producer:
+ * size_t SequenceProducerV2().
+ *
+ * This new function adds a new argument,
+ * sequence_producer_parameters_t*.  Through this argument the caller
+ * (nominally ZSTD) can request XXH64 acceleration and sequence
+ * statistics acceleration from the external sequence producer.
+ *
+ * To request the xxhash and sequence statistics:
+ *  1. The caller allocates
+ *     storage params = malloc(sizeof sequence_producer_parameters_t).
+ *  2. Clears the field params->status = 0. Initializing the histogram_t
+ *     struct is not necessary as it will be overwritten.
+ *  3. zstd_xxh64_state must contain the current XXh64 state of the input
+ *     stream. The external producer will update this state as if
+ *     calling XXH64_update(src, srcSize).
+ *  4. Calls the SequenceProducerV2(..., params) function whose signature
+ *     is included below.
+ *  5. The external producer, in addition to outSeqs, returns the
+ *     requested information in the same struct *params.
+ *  6. The external producer confirms availability of the information by
+ *     setting the two respective bits in params->status, e.g.,
+ *     (XXHASH_READY | HISTOGRAM_READY) for both.
+ */
+
+typedef size_t (*SequenceProducerV2)(
+    void* sequenceProducerState,
+    ZSTD_Sequence* outSeqs, size_t outSeqsCapacity,
+    const void* src, size_t srcSize,
+    const void* dict, size_t dictSize,
+    int compressionLevel,
+    size_t windowSize,
+    sequence_producer_parameters_t* params
+);
+
 
 #endif /* EXTERNAL_PRODUCERS_H */
